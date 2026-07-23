@@ -87,7 +87,44 @@ test_settings_statusline_command_survives_cwd_drift() {
   # checkout when Claude Code invokes the statusLine command.
   out=$(cd "$SANDBOX" && printf '%s' "$payload" | HOME="$FAKE_HOME" sh -c "$cmd")
   echo "$out" | grep -q "smoke-workspace-branch" || fail "settings.json statusLine command: cwd-independent resolution failed: $out"
+  echo "$out" | grep -q "smoke-ai-workflows-branch" || fail "settings.json statusLine command: ai-workflows branch missing: $out"
   pass "settings.json statusLine command resolves correctly from a non-root cwd"
+}
+
+# --- Regression: the settings.json wrapper's own jq extraction must degrade
+# gracefully (not crash) when project_dir can't be resolved at all — e.g.
+# malformed JSON, or jq itself unavailable. This is the one failure mode
+# test_statusline_handles_missing_project_dir_gracefully can't cover, since
+# that test exercises statusline.sh directly — this exercises the outer
+# settings.json command, which is a separate code path with its own
+# jq call and its own guard against an empty/unresolvable $dir. ---
+
+test_settings_statusline_command_handles_unresolvable_project_dir() {
+  local cmd out rc=0
+  cmd=$(jq -r '.statusLine.command' "$SETTINGS")
+  out=$(cd "$SANDBOX" && echo '{}' | HOME="$FAKE_HOME" sh -c "$cmd") || rc=$?
+  [[ "$rc" -eq 0 ]] || fail "settings.json statusLine command (no project_dir): expected exit 0, got $rc: $out"
+  echo "$out" | grep -q "unavailable" || fail "settings.json statusLine command (no project_dir): expected graceful fallback message, got: $out"
+  pass "settings.json statusLine command degrades gracefully when project_dir can't be resolved"
+}
+
+# --- The pre-existing user-statusline-delegation branch (statusline.sh's own
+# "run the user's own global statusline first" block) is untouched by this
+# fix but was previously never exercised by this suite — nothing verified it
+# still works alongside the new project_dir logic. Sets up a throwaway
+# ~/.claude/settings.json for the duration of this one test only, so it
+# doesn't affect the other tests sharing $FAKE_HOME. ---
+
+test_statusline_still_delegates_to_users_own_statusline() {
+  local user_settings="${FAKE_HOME}/.claude/settings.json"
+  mkdir -p "$(dirname "$user_settings")"
+  echo '{"statusLine":{"type":"command","command":"echo delegated-ok"}}' > "$user_settings"
+  local out
+  out=$(echo '{}' | HOME="$FAKE_HOME" bash "$STATUSLINE" "$WORKSPACE_REPO")
+  rm -f "$user_settings"
+  echo "$out" | grep -q "delegated-ok" || fail "statusline (delegation): user's own statusLine command was not invoked: $out"
+  echo "$out" | grep -q "smoke-workspace-branch" || fail "statusline (delegation): project git status missing alongside delegated output: $out"
+  pass "statusline.sh still delegates to the user's own global statusline alongside project git status"
 }
 
 # --- update-ai-context.sh: CLAUDE_PROJECT_DIR resolution ---
@@ -115,6 +152,8 @@ test_statusline_uses_passed_project_dir
 test_statusline_falls_back_to_json_project_dir
 test_statusline_handles_missing_project_dir_gracefully
 test_settings_statusline_command_survives_cwd_drift
+test_settings_statusline_command_handles_unresolvable_project_dir
+test_statusline_still_delegates_to_users_own_statusline
 
 echo ""
 echo "=== update-ai-context.sh ==="
